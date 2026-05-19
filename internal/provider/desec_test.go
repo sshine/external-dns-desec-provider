@@ -787,6 +787,63 @@ func TestAdjustEndpoints(t *testing.T) {
 	}
 }
 
+// TestAdjustEndpoints_TTLZeroMatchesStoredRecord_Issue18 pins the behavior
+// that prevents the rate-limit loop described in issue #18: when a source
+// (e.g. Gateway HTTPRoute) emits an endpoint with RecordTTL=0, the adjusted
+// endpoint must match the TTL of the record already stored at deSEC. If they
+// differ, external-dns computes a no-op Update on every reconcile, consuming
+// the 300-request daily quota until throttled.
+func TestAdjustEndpoints_TTLZeroMatchesStoredRecord_Issue18(t *testing.T) {
+	cfg := config.Config{
+		APIToken:      "test-token",
+		DomainFilters: []string{"example.com"},
+		DefaultTTL:    3600,
+	}
+	client, err := CreateDesecClient(cfg)
+	if err != nil {
+		t.Fatalf("CreateDesecClient: %v", err)
+	}
+
+	// Desired endpoint from a TTL-less source.
+	desired := []*endpoint.Endpoint{
+		{
+			DNSName:    "app.example.com",
+			RecordType: "A",
+			Targets:    endpoint.Targets{"192.0.2.1"},
+			RecordTTL:  0,
+		},
+	}
+
+	// Stored record as deSEC would return it (TTL clamped to the 3600 minimum).
+	stored := convertRRSetToEndpoint(&desec.RRSet{
+		SubName: "app",
+		Type:    "A",
+		Records: []string{"192.0.2.1"},
+		TTL:     3600,
+	}, "example.com")
+
+	adjusted, err := client.AdjustEndpoints(desired)
+	if err != nil {
+		t.Fatalf("AdjustEndpoints: %v", err)
+	}
+	if len(adjusted) != 1 {
+		t.Fatalf("expected 1 adjusted endpoint, got %d", len(adjusted))
+	}
+
+	if adjusted[0].RecordTTL != stored.RecordTTL {
+		t.Errorf("TTL mismatch would trigger spurious Update: adjusted=%d stored=%d",
+			adjusted[0].RecordTTL, stored.RecordTTL)
+	}
+	if !reflect.DeepEqual(adjusted[0].Targets, stored.Targets) {
+		t.Errorf("Targets mismatch would trigger spurious Update: adjusted=%v stored=%v",
+			adjusted[0].Targets, stored.Targets)
+	}
+	if adjusted[0].RecordType != stored.RecordType {
+		t.Errorf("RecordType mismatch: adjusted=%s stored=%s",
+			adjusted[0].RecordType, stored.RecordType)
+	}
+}
+
 func TestSubDomainScenarios(t *testing.T) {
 	tests := []struct {
 		name          string
