@@ -281,9 +281,18 @@ func convertEndpointToRRSet(ep *endpoint.Endpoint, domain string, defaultTTL int
 	records := make([]string, len(ep.Targets))
 	for i, target := range ep.Targets {
 		rec := target
-		// Ensure CNAME records end with a dot
-		if ep.RecordType == "CNAME" && !strings.HasSuffix(rec, ".") {
-			rec = rec + "."
+		switch ep.RecordType {
+		case "CNAME":
+			if !strings.HasSuffix(rec, ".") {
+				rec = rec + "."
+			}
+		case "TXT":
+			// The deSEC API expects and returns TXT values in RFC 1035
+			// zone-file form (wrapped in double quotes). external-dns
+			// sources emit unquoted values, so we wrap them here to match
+			// what the API will return on the next read; otherwise every
+			// reconcile sees a spurious diff.
+			rec = quoteTXTValue(rec)
 		}
 		records[i] = rec
 	}
@@ -318,7 +327,12 @@ func convertRRSetToEndpoint(rrset *desec.RRSet, domain string) *endpoint.Endpoin
 	dnsName = strings.TrimSuffix(dnsName, ".") + "."
 
 	targets := make(endpoint.Targets, len(rrset.Records))
-	copy(targets, rrset.Records)
+	for i, rec := range rrset.Records {
+		if rrset.Type == "TXT" {
+			rec = unquoteTXTValue(rec)
+		}
+		targets[i] = rec
+	}
 
 	return &endpoint.Endpoint{
 		DNSName:    dnsName,
@@ -326,6 +340,36 @@ func convertRRSetToEndpoint(rrset *desec.RRSet, domain string) *endpoint.Endpoin
 		Targets:    targets,
 		RecordTTL:  endpoint.TTL(rrset.TTL),
 	}
+}
+
+// quoteTXTValue wraps a TXT record value in double quotes if it is not
+// already wrapped. The deSEC API represents TXT records in RFC 1035 zone-file
+// form (surrounding quotes), so sending unquoted values would cause every
+// read to disagree with what we wrote, producing a spurious Update each
+// reconcile.
+func quoteTXTValue(s string) string {
+	if len(s) >= 2 && strings.HasPrefix(s, `"`) && strings.HasSuffix(s, `"`) {
+		return s
+	}
+	return `"` + s + `"`
+}
+
+// unquoteTXTValue strips a surrounding pair of double quotes from a TXT
+// record value returned by the deSEC API. RFC 1035 §3.3.14 allows a TXT RR
+// to contain multiple <character-string>s, which the API represents as
+// space-separated quoted strings within a single records[] entry (e.g.
+// `"foo" "bar"`). Those must round-trip intact, otherwise external-dns sees
+// a perpetual diff and the rate-limit loop returns. We therefore only strip
+// when the value is a single character-string -- i.e. has no interior quotes.
+func unquoteTXTValue(s string) string {
+	if len(s) < 2 || !strings.HasPrefix(s, `"`) || !strings.HasSuffix(s, `"`) {
+		return s
+	}
+	interior := s[1 : len(s)-1]
+	if strings.Contains(interior, `"`) {
+		return s
+	}
+	return interior
 }
 
 // extractSubname extracts the subdomain part from a DNS name and domain
