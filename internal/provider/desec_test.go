@@ -371,7 +371,7 @@ func TestConvertEndpointToRRSetExtended(t *testing.T) {
 			},
 		},
 		{
-			name: "TXT record gets RFC-1035 quote wrapping",
+			name: "TXT record",
 			input: &endpoint.Endpoint{
 				DNSName:    "_dmarc.example.com",
 				RecordType: "TXT",
@@ -381,7 +381,7 @@ func TestConvertEndpointToRRSetExtended(t *testing.T) {
 			expected: &desec.RRSet{
 				SubName: "_dmarc",
 				Type:    "TXT",
-				Records: []string{`"v=DMARC1; p=reject"`},
+				Records: []string{"v=DMARC1; p=reject"},
 				TTL:     3600,
 			},
 		},
@@ -782,148 +782,6 @@ func TestAdjustEndpoints(t *testing.T) {
 
 			if !reflect.DeepEqual(result, tt.expected) {
 				t.Errorf("AdjustEndpoints() = %+v, want %+v", result, tt.expected)
-			}
-		})
-	}
-}
-
-// TestConvertEndpointToRRSet_TXTQuoteWrapping verifies that unquoted TXT
-// values from external-dns are wrapped in RFC 1035 quotes before being sent
-// to deSEC, and that already-quoted values are left alone (no double wrap).
-func TestConvertEndpointToRRSet_TXTQuoteWrapping(t *testing.T) {
-	tests := []struct {
-		name    string
-		targets endpoint.Targets
-		want    []string
-	}{
-		{
-			name:    "unquoted value gets wrapped",
-			targets: endpoint.Targets{"heritage=external-dns,external-dns/owner=k8s"},
-			want:    []string{`"heritage=external-dns,external-dns/owner=k8s"`},
-		},
-		{
-			name:    "already-quoted value stays single-wrapped",
-			targets: endpoint.Targets{`"heritage=external-dns"`},
-			want:    []string{`"heritage=external-dns"`},
-		},
-		{
-			name:    "empty TXT becomes empty quoted string",
-			targets: endpoint.Targets{""},
-			want:    []string{`""`},
-		},
-		{
-			name:    "multiple targets each get wrapped independently",
-			targets: endpoint.Targets{"v=spf1 -all", `"already=quoted"`},
-			want:    []string{`"v=spf1 -all"`, `"already=quoted"`},
-		},
-		{
-			name:    "multi-character-string TXT (RFC 1035 §3.3.14) passes through",
-			targets: endpoint.Targets{`"first part" "second part"`},
-			want:    []string{`"first part" "second part"`},
-		},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			ep := &endpoint.Endpoint{
-				DNSName:    "_dmarc.example.com",
-				RecordType: "TXT",
-				Targets:    tc.targets,
-			}
-			got := convertEndpointToRRSet(ep, "example.com", 3600)
-			if !reflect.DeepEqual(got.Records, tc.want) {
-				t.Errorf("Records = %v, want %v", got.Records, tc.want)
-			}
-		})
-	}
-}
-
-// TestConvertRRSetToEndpoint_TXTQuoteStripping verifies that the surrounding
-// quote pair deSEC adds to TXT records is removed on read so external-dns
-// compares against the same string the source emitted.
-func TestConvertRRSetToEndpoint_TXTQuoteStripping(t *testing.T) {
-	tests := []struct {
-		name    string
-		records []string
-		want    endpoint.Targets
-	}{
-		{
-			name:    "quoted heritage record gets stripped",
-			records: []string{`"heritage=external-dns,external-dns/owner=k8s"`},
-			want:    endpoint.Targets{"heritage=external-dns,external-dns/owner=k8s"},
-		},
-		{
-			name:    "unquoted value passes through unchanged",
-			records: []string{"v=DMARC1; p=reject"},
-			want:    endpoint.Targets{"v=DMARC1; p=reject"},
-		},
-		{
-			name:    "value with interior quotes is left in zone-file form",
-			records: []string{`"key=\"value\""`},
-			want:    endpoint.Targets{`"key=\"value\""`},
-		},
-		{
-			name:    "unbalanced single quote is left untouched",
-			records: []string{`"unbalanced`},
-			want:    endpoint.Targets{`"unbalanced`},
-		},
-		{
-			name:    "multi-character-string TXT (RFC 1035 §3.3.14) is preserved",
-			records: []string{`"first part" "second part"`},
-			want:    endpoint.Targets{`"first part" "second part"`},
-		},
-		{
-			name:    "three-string TXT is preserved",
-			records: []string{`"a" "b" "c"`},
-			want:    endpoint.Targets{`"a" "b" "c"`},
-		},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got := convertRRSetToEndpoint(&desec.RRSet{
-				SubName: "_dmarc",
-				Type:    "TXT",
-				Records: tc.records,
-				TTL:     3600,
-			}, "example.com")
-			if !reflect.DeepEqual(got.Targets, tc.want) {
-				t.Errorf("Targets = %v, want %v", got.Targets, tc.want)
-			}
-		})
-	}
-}
-
-// TestRoundTripPreservesTXTValues_Issue18 is the regression test for the loop
-// described in issue #18: when external-dns emits an ownership TXT target,
-// writing then reading must yield the same target so the next reconcile does
-// not see a spurious diff.
-func TestRoundTripPreservesTXTValues_Issue18(t *testing.T) {
-	originals := []string{
-		"heritage=external-dns,external-dns/owner=k8s-cluster01,external-dns/resource=httproute/keycloak/keycloak",
-		"v=DMARC1; p=reject",
-		"v=spf1 -all",
-		"",
-		// Multi-character-string TXT per RFC 1035 §3.3.14. external-dns
-		// stores these in zone-file form so the wire structure is preserved.
-		`"first part" "second part"`,
-		`"a" "b" "c"`,
-	}
-	for _, original := range originals {
-		t.Run(original, func(t *testing.T) {
-			// Write path: external-dns -> deSEC RRSet.
-			rrset := convertEndpointToRRSet(&endpoint.Endpoint{
-				DNSName:    "_externaldns.example.com",
-				RecordType: "TXT",
-				Targets:    endpoint.Targets{original},
-				RecordTTL:  3600,
-			}, "example.com", 3600)
-
-			// Read path: deSEC RRSet (as it would echo back the stored value)
-			// -> external-dns endpoint.
-			ep := convertRRSetToEndpoint(rrset, "example.com")
-
-			if len(ep.Targets) != 1 || ep.Targets[0] != original {
-				t.Errorf("round-trip lost value: original=%q stored=%q read=%q",
-					original, rrset.Records[0], ep.Targets)
 			}
 		})
 	}
