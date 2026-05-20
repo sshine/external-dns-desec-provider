@@ -308,14 +308,19 @@ func convertRRSetToEndpoint(rrset *desec.RRSet, domain string) *endpoint.Endpoin
 		return nil
 	}
 
-	// Compose DNSName from subname and domain
+	// Compose DNSName from subname and domain. external-dns sources emit
+	// DNSName without a trailing dot, and external-dns's TXT registry
+	// matches companion records by exact-string DNSName -- if /records
+	// returns a dotted form, the registry sets providerSpecific
+	// txt/force-update=true on every reconcile and the plan calculator
+	// emits a no-op Update for every record.
 	var dnsName string
 	if rrset.SubName == "" {
 		dnsName = domain
 	} else {
 		dnsName = rrset.SubName + "." + domain
 	}
-	dnsName = strings.TrimSuffix(dnsName, ".") + "."
+	dnsName = strings.TrimSuffix(dnsName, ".")
 
 	targets := make(endpoint.Targets, len(rrset.Records))
 	copy(targets, rrset.Records)
