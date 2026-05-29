@@ -1,7 +1,9 @@
 package provider
 
 import (
+	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/michelangelomo/external-dns-desec-provider/internal/config"
@@ -986,5 +988,30 @@ func TestSubDomainConvertEndpointToRRSet(t *testing.T) {
 				t.Errorf("convertEndpointToRRSet() = %+v, want %+v", result, tt.expected)
 			}
 		})
+	}
+}
+
+// TestApexRRSetJSONIncludesEmptySubname is a regression guard for
+// nrdcg/desec#fd7f5e0 ("fix: subname as empty string"), released in
+// v0.11.2. Before the fix, RRSet.SubName was tagged
+// `json:"subname,omitempty"`, which dropped the field for apex RRsets
+// and triggered `400 {"subname":["This field is required."]}` from the
+// deSEC API. If the dependency ever rolls back to a release that
+// reintroduces omitempty, this test fails loudly. See bug-2.md.
+func TestApexRRSetJSONIncludesEmptySubname(t *testing.T) {
+	rrset := convertEndpointToRRSet(&endpoint.Endpoint{
+		DNSName:    "example.com",
+		RecordType: "A",
+		Targets:    endpoint.Targets{"192.0.2.1"},
+		RecordTTL:  3600,
+	}, "example.com", 3600)
+
+	out, err := json.Marshal(rrset)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	if !strings.Contains(string(out), `"subname":""`) {
+		t.Errorf("apex RRSet JSON must include `\"subname\":\"\"` (deSEC rejects POST bodies without subname): got %s", out)
 	}
 }
